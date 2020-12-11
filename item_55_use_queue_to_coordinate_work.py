@@ -46,33 +46,6 @@ class StoppableWorker(Thread):
             self.out_queue.put(res)
 
 
-download_queue = ClosableQueue()
-resize_queue = ClosableQueue()
-upload_queue = ClosableQueue()
-done_queue = ClosableQueue()
-
-threads = [StoppableWorker(download, download_queue, resize_queue),
-           StoppableWorker(resize, resize_queue, upload_queue),
-           StoppableWorker(upload, upload_queue, done_queue),
-           ]
-for thread in threads:
-    thread.start()
-
-
-for _ in range(10):
-    download_queue.put(object())
-
-download_queue.close()
-download_queue.join()
-resize_queue.close()
-resize_queue.join()
-upload_queue.close()
-upload_queue.join()
-print(f"Done: {done_queue.qsize()} items")
-for thread in threads:
-    thread.join()
-
-
 def start_threads(n, *args):
     threads = [StoppableWorker(*args) for _ in range(n)]
     for thread in threads:
@@ -88,19 +61,45 @@ def stop_threads(queue, threads):
         th.join()
 
 
-download_queue = ClosableQueue()
-resize_queue = ClosableQueue()
-upload_queue = ClosableQueue()
-done_queue = ClosableQueue()
+if __name__ == "__main__":
+    download_queue = ClosableQueue()
+    resize_queue = ClosableQueue()
+    upload_queue = ClosableQueue()
+    done_queue = ClosableQueue()
 
-download_threads = start_threads(3, download, download_queue, resize_queue)
-resize_threads = start_threads(4, resize, resize_queue, upload_queue)
-upload_threads = start_threads(5, upload, upload_queue, done_queue)
+    threads = [StoppableWorker(download, download_queue, resize_queue),
+               StoppableWorker(resize, resize_queue, upload_queue),
+               StoppableWorker(upload, upload_queue, done_queue),
+               ]
+    for thread in threads:
+        thread.start()
 
-for _ in range(10):
-    download_queue.put(object())
+    for _ in range(10):
+        download_queue.put(object())
 
-stop_threads(download_queue, download_threads)
-stop_threads(resize_queue, resize_threads)
-stop_threads(upload_queue, upload_threads)
-print(f"Done: {done_queue.qsize()} items")
+    download_queue.close()
+    download_queue.join()
+    resize_queue.close()
+    resize_queue.join()
+    upload_queue.close()
+    upload_queue.join()
+    print(f"Done: {done_queue.qsize()} items")
+    for thread in threads:
+        thread.join()
+
+    download_queue = ClosableQueue()
+    resize_queue = ClosableQueue()
+    upload_queue = ClosableQueue()
+    done_queue = ClosableQueue()
+
+    download_threads = start_threads(3, download, download_queue, resize_queue)
+    resize_threads = start_threads(4, resize, resize_queue, upload_queue)
+    upload_threads = start_threads(5, upload, upload_queue, done_queue)
+
+    for _ in range(10):
+        download_queue.put(object())
+
+    stop_threads(download_queue, download_threads)
+    stop_threads(resize_queue, resize_threads)
+    stop_threads(upload_queue, upload_threads)
+    print(f"Done: {done_queue.qsize()} items")
