@@ -1,8 +1,7 @@
+import asyncio
 import contextlib
 import math
 import random
-import socket
-from threading import Thread
 
 
 class EOFError(Exception):
@@ -19,28 +18,30 @@ class UnknownCommandError(Exception):
     pass
 
 
-class ConnectionBase:
-    def __init__(self, connection):
+class AsyncConnectionBase:
+    def __init__(self, reader, writer):
         """
 
         :type connection: object
         """
-        self.connection = connection
-        self.file = connection.makefile('rb')
+        self.reader = reader
+        self.writer = writer
 
-    def send(self, command):
+    async def send(self, command):
         line = command + '\n'
         data = line.encode()
-        self.connection.send(data)
+        self.writer.write(data)
+        await self.writer.drain()
 
-    def receive(self):
-        line = self.file.readline()
+    async def receive(self):
+        line = await self.reader.readline()
         if not line:
             raise EOFError('Connection closed')
         return line[:-1].decode()
 
 
-class Session(ConnectionBase):
+class AsyncSession(AsyncConnectionBase):
+
     def __init__(self, *args):
         super().__init__(*args)
         self._clear_state(None, None)
@@ -51,14 +52,13 @@ class Session(ConnectionBase):
         self.secret = None
         self.guesses = []
 
-    def loop(self):
-        """Server's loop."""
-        while command := self.receive():
+    async def loop(self):
+        while command := await self.receive():
             parts = command.split()
             if parts[0] == "PARAMS":
                 self.set_params(parts)
             elif parts[0] == "NUMBER":
-                self.send_number()
+                await self.send_number()
             elif parts[0] == "REPORT":
                 self.receive_report(parts)
             else:
@@ -78,10 +78,10 @@ class Session(ConnectionBase):
             if guess not in self.guesses:
                 return guess
 
-    def send_number(self):
+    async def send_number(self):
         g = self.next_guess()
         self.guesses.append(g)
-        self.send(format(g))
+        await self.send(format(g))
 
     def receive_report(self, parts):
         assert len(parts) == 2
@@ -92,7 +92,7 @@ class Session(ConnectionBase):
         print(f"Server: {last} is {decision}")
 
 
-class Client(ConnectionBase):
+class AsyncClient(AsyncConnectionBase):
 
     def __init__(self, *args):
         super().__init__(*args)
@@ -102,27 +102,27 @@ class Client(ConnectionBase):
         self.secret = None
         self.last_distance = None
 
-    @contextlib.contextmanager
-    def session(self, lower, upper, secret):
+    @contextlib.asynccontextmanager
+    async def session(self, lower, upper, secret):
         print(f'Guess a number between {lower} and {upper}!'
               f' Shhhhh, it\'s {secret}.')
         self.secret = secret
-        self.send(f'PARAMS {lower} {upper}')
+        await self.send(f'PARAMS {lower} {upper}')
         try:
             yield
         finally:
             self._clear_state()
-            self.send('PARAMS 0 -1')
+            await self.send('PARAMS 0 -1')
 
-    def request_numbers(self, count):
+    async def request_numbers(self, count):
         for _ in range(count):
-            self.send('NUMBER')
-            data = self.receive()
+            await self.send('NUMBER')
+            data = await self.receive()
             yield int(data)
             if self.last_distance == 0:
                 return
 
-    def report_outcome(self, number):
+    async def report_outcome(self, number):
         new_distance = math.fabs(number - self.secret)
         decision = UNSURE
 
@@ -136,58 +136,53 @@ class Client(ConnectionBase):
             decision = COLDER
 
         self.last_distance = new_distance
-        self.send(f'REPORT {decision}')
+        await self.send(f'REPORT {decision}')
         return decision
 
 
-def handle_connection(connection):
-    with connection:
-        session = Session(connection)
-        try:
-            session.loop()
-        except EOFError:
-            pass
+async def handle_async_connection(reader, writer):
+    session = AsyncSession(reader, writer)
+    try:
+        await session.loop()
+    except EOFError:
+        pass
 
 
-def run_server(address):
-    with socket.socket() as listener:
-        listener.bind(address)
-        listener.listen()
-        while True:
-            connection, _ = listener.accept()
-            thread = Thread(target=handle_connection,
-                            args=(connection,),
-                            daemon=True)
-            thread.start()
+async def run_async_server(address):
+    server = await asyncio.start_server(handle_async_connection, *address)
+    print("server started")
+    async with server:
+        await server.serve_forever()
 
 
-def run_client(address):
-    with socket.create_connection(address) as connection:
-        client = Client(connection)
+async def run_async_client(address):
+    streams = await asyncio.open_connection(*address)
+    client = AsyncClient(*streams)
 
-        with client.session(1, 50, 3):
-            results = [(x, client.report_outcome(x))
-                       for x in client.request_numbers(10)]
+    async with client.session(1, 50, 3):
+        results = [(x, await client.report_outcome(x))
+                   async for x in client.request_numbers(3)]
 
-        with client.session(10, 15, 12):
-            for number in client.request_numbers(5):
-                outcome = client.report_outcome(number)
-                results.append((number, outcome))
-
+    async with client.session(10, 15, 12):
+        async for number in client.request_numbers(5):
+            outcome = await client.report_outcome(number)
+            results.append((number, outcome))
+    _, writer = streams
+    writer.close()
+    await writer.wait_closed()
     return results
 
 
-def main():
+async def main():
     address = ('127.0.0.1', 1234)
-    server_thread = Thread(
-        target=run_server, args=(address,), daemon=True)
-    server_thread.start()
-
-    results = run_client(address)
-    for number, outcome in results:
-        print(f'Client: {number} is {outcome}')
+    server = run_async_server(address)
+    asyncio.create_task(server)
+    await asyncio.sleep(1e-2)
+    results = await run_async_client(address)
+    for x, y in results:
+        print(f"Client: {x} is {y}")
 
 
 if __name__ == '__main__':
-    main()
+    asyncio.run(main())
 
